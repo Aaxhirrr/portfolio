@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import ActivityFeed from "@/app/ActivityFeed";
+import { Analytics } from "@vercel/analytics/next"
 
 /*************************
  * Brand / Theme Palette
