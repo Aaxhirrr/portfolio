@@ -12,12 +12,26 @@ const GH_LIMIT = 4;
 const LC_LIMIT = 4;
 
 type GhItem = { id: string; title: string; subtitle?: string; repo?: string; ts?: string };
-type LcItem = { id: string; title: string; slug: string; status: string; lang: string; ts: number };
+type LcItem = { id: string; title: string; slug: string; status: string; lang: string; ts: number | string };
 
 function timeAgo(ts?: string | number) {
-  if (!ts) return "";
-  const t = typeof ts === "string" ? new Date(ts).getTime() : Number(ts) * 1000;
-  const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (ts === undefined || ts === null) return "";
+  // Accept ts as ISO string, ms number, or seconds number
+  let tMs: number;
+  if (typeof ts === "string") {
+    // try ISO or numeric string
+    if (/^\d+$/.test(ts)) {
+      const n = Number(ts);
+      tMs = n > 1e12 ? n : n * 1000;
+    } else {
+      tMs = new Date(ts).getTime();
+    }
+  } else {
+    // number: detect seconds vs ms
+    tMs = ts > 1e12 ? ts : ts * 1000;
+  }
+
+  const s = Math.max(0, Math.floor((Date.now() - tMs) / 1000));
   if (s < 60) return `${s}s ago`;
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m ago`;
@@ -27,37 +41,26 @@ function timeAgo(ts?: string | number) {
   return `${d}d ago`;
 }
 
-function GlowTitle({ children }: { children: React.ReactNode }) {
-  // same visual recipe as SectionTitle but inlined here
-  return (
-    <h2 className="relative inline-block text-2xl font-semibold tracking-tight">
-      <span className="relative z-10 text-transparent bg-clip-text bg-gradient-to-r from-pink-500 via-red-500 to-yellow-500">
-        {children}
-      </span>
-      <span
-        aria-hidden
-        className="pointer-events-none absolute inset-0 z-0 blur-lg opacity-30 bg-gradient-to-r from-pink-500 via-red-500 to-yellow-500"
-      />
-    </h2>
-  );
-}
-
 export default function ActivityFeed() {
   const [gh, setGh] = useState<GhItem[]>([]);
   const [lc, setLc] = useState<LcItem[]>([]);
   const [loading, setLoading] = useState({ gh: true, lc: true });
+  const [error, setError] = useState<{ gh?: string; lc?: string }>({});
+  const [lcRaw, setLcRaw] = useState<string | null>(null);
+  const [showLcRaw, setShowLcRaw] = useState(false);
 
   const fetchGh = useCallback(async () => {
     try {
       setLoading((s) => ({ ...s, gh: true }));
-      const r = await fetch(
-        `/api/activity/github?user=${encodeURIComponent(GITHUB_USER)}&limit=${GH_LIMIT}`,
-        { cache: "no-store" }
-      );
+      setError((e) => ({ ...e, gh: undefined }));
+      const r = await fetch(`/api/activity/github?user=${encodeURIComponent(GITHUB_USER)}&limit=${GH_LIMIT}`, { cache: "no-store" });
       const ct = r.headers.get("content-type") || "";
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = ct.includes("application/json") ? await r.json() : { items: [] };
       setGh((Array.isArray(j.items) ? j.items : []).slice(0, GH_LIMIT));
-    } catch {
+    } catch (err: any) {
+      console.error("fetchGh error:", err);
+      setError((e) => ({ ...e, gh: err?.message || String(err) }));
       setGh([]);
     } finally {
       setLoading((s) => ({ ...s, gh: false }));
@@ -67,14 +70,28 @@ export default function ActivityFeed() {
   const fetchLc = useCallback(async () => {
     try {
       setLoading((s) => ({ ...s, lc: true }));
-      const r = await fetch(
-        `/api/activity/leetcode?user=${encodeURIComponent(LEETCODE_USER)}&limit=${LC_LIMIT}`,
-        { cache: "no-store" }
-      );
-      const ct = r.headers.get("content-type") || "";
-      const j = ct.includes("application/json") ? await r.json() : { items: [] };
+      setError((e) => ({ ...e, lc: undefined }));
+      setLcRaw(null);
+      const url = `/api/activity/leetcode?user=${encodeURIComponent(LEETCODE_USER)}&limit=${LC_LIMIT}`;
+      const r = await fetch(url, { cache: "no-store" });
+
+      // Grab raw text for debugging (LeetCode scrapers sometimes return HTML or rate-limit pages)
+      const text = await r.text();
+      setLcRaw(text); // store raw response for UI debug
+      // try to parse as JSON
+      let j: any;
+      try {
+        j = JSON.parse(text);
+      } catch (parseErr) {
+        // not JSON — surface the raw text and throw
+        throw new Error(`Non-JSON response from ${url} — first 200 chars: ${text.slice(0, 200)}`);
+      }
+
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
       setLc((Array.isArray(j.items) ? j.items : []).slice(0, LC_LIMIT));
-    } catch {
+    } catch (err: any) {
+      console.error("fetchLc error:", err);
+      setError((e) => ({ ...e, lc: err?.message || String(err) }));
       setLc([]);
     } finally {
       setLoading((s) => ({ ...s, lc: false }));
@@ -102,7 +119,14 @@ export default function ActivityFeed() {
   return (
     <section id="activity" className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pb-20">
       <div className="mb-4 flex items-center gap-3">
-        <GlowTitle>Activity Feed</GlowTitle>
+        <h2 className="text-2xl font-semibold tracking-tight">
+          <span className="relative inline-block">
+            <span className="text-transparent bg-clip-text bg-gradient-to-r from-pink-500 via-red-500 to-yellow-500">
+              Activity Feed
+            </span>
+            <span className="absolute inset-0 -z-10 blur-lg opacity-30 bg-gradient-to-r from-pink-500 via-red-500 to-yellow-500" />
+          </span>
+        </h2>
         <button
           onClick={() => {
             fetchGh();
@@ -116,15 +140,13 @@ export default function ActivityFeed() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* GitHub */}
-        <motion.div
-          style={{ y: yPanels }}
-          className="relative rounded-3xl border border-neutral-800 bg-neutral-950/70 p-5 pt-6 shadow-inner"
-        >
+        <motion.div style={{ y: yPanels }} className="relative rounded-3xl border border-neutral-800 bg-neutral-950/70 p-5 pt-6 shadow-inner">
           <div className="flex items-center gap-2 mb-3">
             <Github className="text-sky-400" size={18} />
             <div className="text-sky-400/90 font-semibold tracking-wide">Latest GitHub Activity</div>
           </div>
 
+          {/* Do not affect layout */}
           <span className="absolute top-4 right-5 text-[11px] text-neutral-500">{GH_LIMIT} latest</span>
 
           <ul className="space-y-3">
@@ -162,6 +184,7 @@ export default function ActivityFeed() {
             </AnimatePresence>
           </ul>
 
+          {/* doodle glow frame */}
           <svg className="pointer-events-none absolute inset-0 -z-10" width="100%" height="100%">
             <defs>
               <filter id="gh-squig">
@@ -169,18 +192,12 @@ export default function ActivityFeed() {
                 <feDisplacementMap in="SourceGraphic" in2="n" scale="2" />
               </filter>
             </defs>
-            <rect
-              x="0" y="0" width="100%" height="100%" rx="24" ry="24"
-              fill="transparent" stroke="rgba(14,165,233,0.25)" strokeWidth="2" style={{ filter: "url(#gh-squig)" }}
-            />
+            <rect x="0" y="0" width="100%" height="100%" rx="24" ry="24" fill="transparent" stroke="rgba(14,165,233,0.25)" strokeWidth="2" style={{ filter: "url(#gh-squig)" }} />
           </svg>
         </motion.div>
 
         {/* LeetCode */}
-        <motion.div
-          style={{ y: yPanels }}
-          className="relative rounded-3xl border border-neutral-800 bg-neutral-950/70 p-5 pt-6 shadow-inner"
-        >
+        <motion.div style={{ y: yPanels }} className="relative rounded-3xl border border-neutral-800 bg-neutral-950/70 p-5 pt-6 shadow-inner">
           <div className="flex items-center gap-2 mb-3">
             <Code2 className="text-fuchsia-300" size={18} />
             <div className="text-fuchsia-300/90 font-semibold tracking-wide">LeetCode Challenges</div>
@@ -215,12 +232,7 @@ export default function ActivityFeed() {
                         }`}
                       />
                       <div className="flex-1">
-                        <a
-                          href={`https://leetcode.com/problems/${e.slug}/`}
-                          className="text-sm font-semibold hover:underline"
-                          target="_blank"
-                          rel="noreferrer"
-                        >
+                        <a href={`https://leetcode.com/problems/${e.slug}/`} className="text-sm font-semibold hover:underline" target="_blank" rel="noreferrer">
                           {e.title}
                         </a>
                         <div className="text-xs text-neutral-400">
@@ -233,9 +245,43 @@ export default function ActivityFeed() {
                   )}
                 </motion.li>
               ))}
+
+              {/* show helpful messages when nothing returned */}
+              {!loading.lc && lc.length === 0 && (
+                <motion.li
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-4 text-sm text-neutral-300"
+                >
+                  {error.lc ? (
+                    <div>
+                      <div className="mb-2 text-rose-300">Error loading LeetCode: {error.lc}</div>
+                      <div className="flex gap-2">
+                        <button onClick={() => fetchLc()} className="rounded-full border px-3 py-1 text-xs">Retry</button>
+                        <a href={`/api/activity/leetcode?user=${encodeURIComponent(LEETCODE_USER)}&limit=${LC_LIMIT}`} target="_blank" rel="noreferrer" className="rounded-full border px-3 py-1 text-xs">Open API</a>
+                        <button onClick={() => setShowLcRaw((v) => !v)} className="rounded-full border px-3 py-1 text-xs">{showLcRaw ? "Hide raw" : "Show raw response"}</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div>
+                      <div>No recent LeetCode activity found (the scraper/API may be rate-limited or returning non-JSON).</div>
+                      <div className="mt-2 flex gap-2">
+                        <button onClick={() => fetchLc()} className="rounded-full border px-3 py-1 text-xs">Retry</button>
+                        <a href={`/api/activity/leetcode?user=${encodeURIComponent(LEETCODE_USER)}&limit=${LC_LIMIT}`} target="_blank" rel="noreferrer" className="rounded-full border px-3 py-1 text-xs">Open API</a>
+                        <button onClick={() => setShowLcRaw((v) => !v)} className="rounded-full border px-3 py-1 text-xs">{showLcRaw ? "Hide raw" : "Show raw response"}</button>
+                      </div>
+                    </div>
+                  )}
+                </motion.li>
+              )}
             </AnimatePresence>
           </ul>
 
+          {showLcRaw && lcRaw && (
+            <pre className="mt-3 max-h-48 overflow-auto rounded-md bg-black/60 p-3 text-xs text-neutral-300 whitespace-pre-wrap break-words">{lcRaw}</pre>
+          )}
+
+          {/* doodle glow frame */}
           <svg className="pointer-events-none absolute inset-0 -z-10" width="100%" height="100%">
             <defs>
               <filter id="lc-squig">
@@ -243,10 +289,7 @@ export default function ActivityFeed() {
                 <feDisplacementMap in="SourceGraphic" in2="n" scale="2" />
               </filter>
             </defs>
-            <rect
-              x="0" y="0" width="100%" height="100%" rx="24" ry="24"
-              fill="transparent" stroke="rgba(217,70,239,0.25)" strokeWidth="2" style={{ filter: "url(#lc-squig)" }}
-            />
+            <rect x="0" y="0" width="100%" height="100%" rx="24" ry="24" fill="transparent" stroke="rgba(217,70,239,0.25)" strokeWidth="2" style={{ filter: "url(#lc-squig)" }} />
           </svg>
         </motion.div>
       </div>
