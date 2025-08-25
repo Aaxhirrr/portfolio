@@ -72,7 +72,7 @@ export default function ActivityFeed() {
       setLoading((s) => ({ ...s, lc: true }));
       setError((e) => ({ ...e, lc: undefined }));
       setLcRaw(null);
-      const url = `/api/activity/leetcode?user=${encodeURIComponent(LEETCODE_USER)}&limit=${LC_LIMIT}`;
+      const url = `/api/leetcode?user=${encodeURIComponent(LEETCODE_USER)}&limit=${LC_LIMIT}`;
       const r = await fetch(url, { cache: "no-store" });
 
       // Grab raw text for debugging (LeetCode scrapers sometimes return HTML or rate-limit pages)
